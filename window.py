@@ -1,12 +1,16 @@
 #!/usr/bin/python
 
-from pygame import init,display,image,event,key,Surface
+from pygame import init,display,image,event,key,Surface,draw,font
+import string
 from pygame.locals import *
 from game import *
 from constants import *
 from sys import argv
-from time import sleep
+from time import sleep,time
 from json import loads,dumps
+import multiprocessing as mp
+from os import getpid,kill
+from signal import SIGKILL
 
 def initScreen():
     init()
@@ -31,14 +35,46 @@ def updateScreenWolfram(field,row):
             window.blit(blackCell,(i * cellWidth,row * cellHeight))
     display.flip()
 
-def updateScreenConway(field):
+def updateScreenConway(aliveCells,deadCells):
+    for i in aliveCells:
+        window.blit(blackCell,(i[0] * cellWidth,i[1] * cellHeight))
+    for i in deadCells:
+        window.blit(whiteCell,(i[0] * cellWidth,i[1] * cellHeight))
     
-    for i in range(height / cellHeight):
-        for j in range(width / cellWidth):
-            if field[i][j]: window.blit(blackCell,(j * cellWidth,i * cellHeight))
-            else: window.blit(whiteCell,(j * cellWidth,i * cellHeight))
     window.blit(grid,(0,0))
     display.flip()
+
+def get_key():
+    while 1:
+        evnt = event.poll()
+        if evnt.type == KEYDOWN:
+            if (evnt.key >= 0x100 and evnt.key <= 0x109): return evnt.key - 0xD0
+            else: return evnt.key
+        else: pass
+
+def display_box(message):
+    "Print a message in a box in the middle of the window"
+    fontobject = font.Font(None,18)
+    draw.rect(window, BLACK,((window.get_width() / 2) - 100,(window.get_height() / 2) - 10,200,20), 0)
+    draw.rect(window, WHITE,((window.get_width() / 2) - 102,(window.get_height() / 2) - 12,204,24), 1)
+    if len(message) != 0: window.blit(fontobject.render(message, 1, WHITE),((window.get_width() / 2) - 100, (window.get_height() / 2) - 10))
+    display.flip()
+
+def ask(question):
+    "ask(question) -> answer"
+    font.init()
+    answer = ""
+    tmp = window.copy()
+    display_box("{}: {}".format(question,answer))
+    while 1:
+        inkey = get_key()
+        if inkey == K_BACKSPACE: answer = answer[0:-1]
+        elif inkey == K_RETURN: break
+        elif inkey == K_MINUS: answer.append("_")
+        elif inkey <= 127: answer += chr(inkey)
+        display_box("{}: {}".format(question,answer))
+    window.blit(tmp,(0,0))
+    return answer
 
 def Conway():
     field = initConway(width / cellWidth,height / cellHeight)
@@ -46,36 +82,74 @@ def Conway():
         d = loads(f.read())
     c = 1
     x = 0
+    done = 0
+    save = 0
+    saving = []
     while c:
         for e in event.get():
             if e.type == QUIT:
                 c = 0
+                kill(p.pid,SIGKILL)
+            
             elif e.type == MOUSEBUTTONDOWN:
-                field[e.pos[1] / cellHeight][e.pos[0] / cellWidth] = 1 - field[e.pos[1] / cellHeight][e.pos[0] / cellWidth]
-                if field[e.pos[1] / cellHeight][e.pos[0] / cellWidth]: window.blit(blackCell,(e.pos[0] - e.pos[0] % cellWidth,e.pos[1] - e.pos[1] % cellHeight))
-                else: window.blit(whiteCell,(e.pos[0] - e.pos[0] % cellWidth,e.pos[1] - e.pos[1] % cellHeight))
+                if (e.pos[0] / cellWidth,e.pos[1] / cellHeight) not in field:
+                    field.append((e.pos[0] / cellWidth,e.pos[1] / cellHeight))
+                    window.blit(blackCell,(e.pos[0] - e.pos[0] % cellWidth,e.pos[1] - e.pos[1] % cellHeight))
+                    if save: saving.append((e.pos[0] / cellWidth,e.pos[1] / cellHeight))
+                else:
+                    del field[field.index((e.pos[0] / cellWidth,e.pos[1] / cellHeight))]
+                    window.blit(whiteCell,(e.pos[0] - e.pos[0] % cellWidth,e.pos[1] - e.pos[1] % cellHeight))
+                    if save: del saving[saving.index((e.pos[0] / cellWidth,e.pos[1] / cellHeight))]
                 display.flip()
+            
             elif e.type == KEYDOWN:
                 if e.key == K_RETURN:
                     x = 1 - x
-                elif e.key == K_g:
-                    for i in d["glider"]:
-                        field[i[1]][i[0]] = 1
-                        window.blit(blackCell,(i[0] * cellWidth,i[1] * cellHeight))
+                    if not done:
+                        queue = mp.Queue()
+                        p = mp.Process(target=updateConway,args=(field,width / cellWidth,height / cellHeight,queue))
+                        p.start()
+                        done = 1
+
+                elif e.key == K_l:
+                    form = ask("form?")
+                    pos = int(ask("place?"))
+                    field = list(field)
+                    for i in d[form]:
+                        field.append((i[0] + pos,i[1] + pos))
+                        window.blit(blackCell,((pos + i[0]) * cellWidth,(pos + i[1]) * cellHeight))
+                    field = set(field)
                     display.flip()
+                
                 elif e.key == K_r:
                     window.fill(WHITE)
                     window.blit(grid,(0,0))
-                    field = [[0 for j in range(width / cellWidth)] for i in range(height / cellHeight)]
+                    field = initConway(width / cellWidth,height / cellHeight)
                     x = 0
+                    done = 0
+                    kill(p.pid,SIGKILL)
                     display.flip()
+                
+                elif e.key == K_s:
+                    save = 1 - save
+                    if not save:
+                        saving.sort()
+                        saving = [[i[0]-saving[0][0],i[1]][::-1] for i in saving]
+                        saving.sort()
+                        saving = [[i[0]-saving[0][0],i[1]][::-1] for i in saving]
+                        d[ask("form name?")] = tuple(saving)
+                        saving = []
+                    with open("forms","w") as f:
+                        f.write(dumps(d))
         if x:
-            field = updateConway(field,width / cellWidth,height / cellHeight)
-            updateScreenConway(field)
-            #sleep(0.01)
+            try:
+                field,dead = queue.get()
+                updateScreenConway(field,dead)
+            except:
+                pass
 
-def Wolfram():
-    field,cases = initWolfram(int(argv[1]),width/cellWidth)
+def Wolfram(rule):
+    field,cases = initWolfram(rule,width/cellWidth)
     c = 1
     while c:
         for e in event.get():
@@ -98,13 +172,26 @@ def Wolfram():
             if e.type == QUIT:
                 c = 0
 
-window = initScreen()
-grid = window.copy()
-grid.set_colorkey(WHITE)
+if __name__ == "__main__":
+    if (len(argv) < 2) or ((argv[1] == "wolfram") and (len(argv) != 3)):
+        print "Usage: {} wolfram rule\n       {} conway".format(argv[0],argv[0])
+        exit(0)
+    
+    window = initScreen()
+    grid = window.copy()
+    grid.set_colorkey(WHITE)
 
-blackCell = Surface((cellWidth,cellHeight))
-blackCell.fill(BLACK)
-whiteCell = Surface((cellWidth,cellHeight))
-whiteCell.fill(WHITE)
-
-Conway()
+    blackCell = Surface((cellWidth,cellHeight))
+    blackCell.fill(BLACK)
+    whiteCell = Surface((cellWidth,cellHeight))
+    whiteCell.fill(WHITE)
+    
+    if argv[1] == "wolfram":
+        try: Wolfram(int(argv[2]))
+        except:
+            print "[-] rule must be int in range(256)"
+            exit(0)
+    elif argv[1] == "conway":
+        Conway()
+    else:
+        print "[-] invalid mode"
